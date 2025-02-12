@@ -123,8 +123,7 @@ def fasta_filter(input, tmp_input, min_length):
                 if line.startswith(">"):
                     if seq_length > min_length:
                         output.write(''.join([header, seq, "\n"]))
-                        #output.write(seq)
-                        print('\t'.join([header, str(seq_length)]))
+                        #print('\t'.join([header, str(seq_length)]))
                     header = line
                     seq = ""
                     seq_length = 0
