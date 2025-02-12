@@ -113,7 +113,30 @@ def get_points(min_val, max_val, num_points, target_sum, mu, metag_size, plot, o
     return(normalized_reads)
 
 
-def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, ext, out, threads, logger):
+def fasta_filter(input, tmp_input, min_length):
+    with open(input, "r") as file:
+        with open(tmp_input, "w") as output:
+            header = ""
+            seq_length = 0
+            seq = ""
+            for line in file:
+                if line.startswith(">"):
+                    if seq_length > min_length:
+                        output.write(''.join([header, seq, "\n"]))
+                        #output.write(seq)
+                        print('\t'.join([header, str(seq_length)]))
+                    header = line
+                    seq = ""
+                    seq_length = 0
+                else:
+                    seq_length += len(line.replace("\n", ""))
+                    seq += line.replace("\n", "")
+    #
+            if seq_length > min_length:
+                        output.write(''.join([header, seq, "\n"]))
+
+
+def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, ext, out, threads, logger):
     # Read input list of folders
     with open(input, "r") as f:
         folder_list = f.readlines()
@@ -139,16 +162,19 @@ def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log
             
             prefix = genome.rsplit("/", 1)[1].rsplit(ext, 1)[0]
             out_path = f"tmp_{out}/{prefix}"
+            tmp_genome = f"{out_path}_filter.fasta"
             out_file = f"{out_path}_SE.fastq" # Name of the output file
             sr_list.append(out_file)
             
             logger.info(f"Simulating reads for genome {genome}")
-            cmd = f"mason_simulator --ir {genome} \
-                --fragment-mean-size 150 --seq-technology illumina \
+            fasta_filter(genome, tmp_genome, 2 * read_length)
+            cmd = f"mason_simulator --ir {tmp_genome} \
+                --illumina-read-length {read_length} --seq-technology illumina \
                 -n {num_sim_reads} --num-threads {threads} \
                 -o {out_file} \
                 --read-name-prefix {prefix} >> {log_file} 2>&1"
             res_sim = subprocess.run(cmd, shell = True)
+            os.remove(tmp_genome)
             if res_sim.returncode != 0:
                 logger.error(f"Error! Short-read simulation failed with genome {genome}. Error code: {res_sim.returncode}")
 
@@ -201,6 +227,11 @@ def main():
                         help="Number of metagenomes to generate. Default: 3",
                         default = 3, 
                         required=False)
+    parser.add_argument("--read_length",
+                        type=int,
+                        help="Length of simulated reads (in bases). Default: 150",
+                        default = 150, 
+                        required=False)
     parser.add_argument("--metag_size",
                         type=int,
                         help="Number of reads per metagenome. Default: 30,000,000",
@@ -227,9 +258,10 @@ def main():
     min_val = args.min_value  # Minimum value
     max_val = args.max_value   # Maximum value
     reps = args.num_metagenomes # Total number of metagenomes
-    metag_size = args.metag_size
-    threads = args.t
-    out = args.out
+    read_length = args.read_length # Read length
+    metag_size = args.metag_size # Metagenome size (total number of reads)
+    threads = args.t # Number of threads to use
+    out = args.out # Prefix for output files
 
 
     # 2. Open log file
@@ -254,7 +286,7 @@ def main():
         normalized_reads = get_points(min_val = min_val, max_val = max_val, num_points = num_species, target_sum = target_sum, mu = mu, metag_size = metag_size, plot = "True", out = out_plot, logger = logger)
 
         # 4.2. Simulate reads for each species
-        sr_list, genome_list = simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, ext, out, threads, logger)
+        sr_list, genome_list = simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, ext, out, threads, logger)
 
         # 4.3. Save list of selected genomes to file
         out_selected_genomes = f"{out}_{rep}_selected_genomes.txt"
