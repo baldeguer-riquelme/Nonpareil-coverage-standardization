@@ -75,6 +75,10 @@ def clear_directory(dir):
     content = glob.glob(f"{dir}/*.fastq")
     for file in content:
         os.remove(file)
+    #
+    content = glob.glob(f"{dir}/*.fai")
+    for file in content:
+        os.remove(file)
 
 
 def get_points(min_val, max_val, num_points, target_sum, mu, metag_size, plot, out, logger):
