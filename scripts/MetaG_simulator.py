@@ -10,17 +10,22 @@ Several variables can be controlled, including the number of species, number of 
 
 
 import argparse
-import glob
+from glob import glob
 import os
 import random
 import subprocess
 import logging
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
 
 def create_logger(out):
     # Open log file
     log_file =f"{out}.log" 
+
+    # Remove log file if exists
+    if os.path.isfile(log_file):
+        os.remove(log_file)
 
     # Create a logger
     logger = logging.getLogger('logs')
@@ -46,7 +51,7 @@ def create_logger(out):
     return(logger, log_file)
 
 
-def merge_fastq_files(input_files, output_file, logger):
+def merge_fastq_files(input_files, output_file):
     """
     Merges multiple FASTQ files into a single file.
 
@@ -72,11 +77,11 @@ def clear_directory(dir):
     Parameters:
         dir (str): Directory with files to remove
     """
-    content = glob.glob(f"{dir}/*.fastq")
+    content = glob(f"{dir}/*.fastq")
     for file in content:
         os.remove(file)
     #
-    content = glob.glob(f"{dir}/*.fai")
+    content = glob(f"{dir}/*.fai")
     for file in content:
         os.remove(file)
 
@@ -123,10 +128,12 @@ def fasta_filter(input, tmp_input, min_length):
             header = ""
             seq_length = 0
             seq = ""
+            genome_length = 0
             for line in file:
                 if line.startswith(">"):
                     if seq_length > min_length:
                         output.write(''.join([header, seq, "\n"]))
+                        genome_length += seq_length
                         #print('\t'.join([header, str(seq_length)]))
                     header = line
                     seq = ""
@@ -134,12 +141,59 @@ def fasta_filter(input, tmp_input, min_length):
                 else:
                     seq_length += len(line.replace("\n", ""))
                     seq += line.replace("\n", "")
-    #
+            #
             if seq_length > min_length:
-                        output.write(''.join([header, seq, "\n"]))
+                output.write(''.join([header, seq, "\n"]))
+                genome_length += seq_length
+    #
+    return(genome_length)
 
 
-def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, ext, out, threads, logger):
+def simulate_illumina(genome, tmp_genome, read_length, num_sim_reads, threads, out_file, prefix, log_file, logger):
+    genome_length = fasta_filter(genome, tmp_genome, 2 * read_length)
+    cmd = f"mason_simulator --ir {tmp_genome} \
+        --illumina-read-length {read_length} --seq-technology illumina \
+        -n {num_sim_reads} --num-threads {threads} \
+        -o {out_file} --fragment-size-model normal\
+        --read-name-prefix {prefix} >> {log_file} 2>&1"
+    res_sim = subprocess.run(cmd, shell = True)
+    os.remove(tmp_genome)
+    if res_sim.returncode != 0:
+        logger.error(f"Error! Short-read simulation failed with genome {genome}. Error code: {res_sim.returncode}")
+
+
+def simulate_pacbio(genome, tmp_genome, read_length, read_length_sd, num_sim_reads, threads, out_file, out_path, prefix, log_file, logger):
+    genome_length = fasta_filter(genome, tmp_genome, read_length)
+    seq_depth = num_sim_reads * read_length / genome_length
+    
+    # Get .sam files containing simulated PacBio reads
+    cmd = f"pbsim --genome {tmp_genome} --depth {seq_depth} \
+    --prefix {out_path} --id-prefix {prefix} \
+    --length-mean {read_length} --length-sd {read_length_sd} \
+    --strategy wgs --method errhmm --errhmm ~/p-ktk3-0/anaconda3/data/ERRHMM-RSII.model --pass-num 10 >> {log_file} 2>&1"
+    res_pbsim = subprocess.run(cmd, shell = True)
+    if res_pbsim.returncode != 0:
+        logger.error(f"Error! PacBio Long-read simulation failed with genome {genome}. Error code: {res_pbsim.returncode}")
+    
+    # Convert sam to bam and get HiFi reads from ccs (PacBio tool)
+    list_sam = glob(f"{out_path}*.sam")
+    for sam in list_sam:
+        cmd = f"samtools view --threads {threads} -bS {sam} > {sam}.bam ; ccs --suppress-reports {sam}.bam {sam}.fastq"
+        res_sam = subprocess.run(cmd, shell = True)
+        if res_sam.returncode != 0:
+            logger.error(f"Error! Samtools or ccs failed with genome {genome}. Error code: {res_sam.returncode}")
+    
+    # Merge multiple fastq into a single fastq file
+    list_fastq = glob(f"{out_path}*.fastq")
+    merge_fastq_files(list_fastq, out_file)
+
+    # Remove tmp files
+    tmp_to_rm = [file for x in [f"{out_path}*sam", f"{out_path}*bam", f"{out_path}*ref", f"{out_path}*maf", f"{out_path}*_report.txt", f"{out_path}*sam.fastq", f"{out_path}*metrics.json.gz"] for file in glob(x)]
+    for file in tmp_to_rm:
+        os.remove(file)
+
+
+def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, read_length_sd, ext, out, threads, logger, action):
     # Read input list of folders
     with open(input, "r") as f:
         folder_list = f.readlines()
@@ -154,7 +208,7 @@ def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log
         sp = [folder_split[-1] if len(folder_split[-1]) > 1 else folder_split[-2]][0]
         logger.info(f"Processing species {sp}")
 
-        avail_genomes = glob.glob(f"{folder}/*{ext}")
+        avail_genomes = glob(f"{folder}/*{ext}")
         selected_genomes = random.sample(avail_genomes, num_genomes_per_sp)
         genome_list.append(selected_genomes[0])
 
@@ -166,26 +220,20 @@ def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log
             prefix = genome.rsplit("/", 1)[1].rsplit(ext, 1)[0]
             out_path = f"tmp_{out}/{prefix}"
             tmp_genome = f"{out_path}_filter.fasta"
-            out_file = f"{out_path}_SE.fastq" # Name of the output file
-            sr_list.append(out_file)
             
             logger.info(f"Simulating reads for genome {genome}")
-            fasta_filter(genome, tmp_genome, 2 * read_length)
-            cmd = f"mason_simulator --ir {tmp_genome} \
-                --illumina-read-length {read_length} --seq-technology illumina \
-                -n {num_sim_reads} --num-threads {threads} \
-                -o {out_file} \
-                --read-name-prefix {prefix} >> {log_file} 2>&1"
-            res_sim = subprocess.run(cmd, shell = True)
-            os.remove(tmp_genome)
-            if res_sim.returncode != 0:
-                logger.error(f"Error! Short-read simulation failed with genome {genome}. Error code: {res_sim.returncode}")
-
+            if action == "illumina":
+                out_file = f"{out_path}_SE.fastq" # Name of the output file
+                simulate_illumina(genome, tmp_genome, read_length, num_sim_reads, threads, out_file, prefix, log_file, logger)
+            elif action == "pacbio":
+                out_file = f"{out_path}_PB.fastq" # Name of the output file
+                simulate_pacbio(genome, tmp_genome, read_length, read_length_sd, num_sim_reads, threads, out_file, out_path, prefix, log_file, logger)
+            sr_list.append(out_file)
 
     return(sr_list, genome_list)
 
 
-def main():
+def options(action):
     parser = argparse.ArgumentParser("Generates in-silico metagenomes with user defined characteristics (e.g., number of species, metagenome size, eveness, number of genomes per species)")
     parser.add_argument("--genome", 
                         type=str, 
@@ -230,23 +278,57 @@ def main():
                         help="Number of metagenomes to generate. Default: 3",
                         default = 3, 
                         required=False)
-    parser.add_argument("--read_length",
-                        type=int,
-                        help="Length of simulated reads (in bases). Default: 150",
-                        default = 150, 
-                        required=False)
-    parser.add_argument("--metag_size",
-                        type=int,
-                        help="Number of reads per metagenome. Default: 30,000,000",
-                        default = 30000000, 
-                        required=False)
     parser.add_argument("--t",
                         type=int,
                         help="Number of threads. Default: 1",
                         default = 1, 
                         required=False)
-    args = parser.parse_args()
+    #
+    if action == "illumina":
+        parser.add_argument("--read_length",
+            type=int,
+            help="Length of simulated reads (in bases). Default: 150",
+            default = 150, 
+            required=False)
+        parser.add_argument("--metag_size",
+            type=int,
+            help="Number of reads per metagenome. Default: 30,000,000",
+            default = 30000000, 
+            required=False)
+    #
+    if action == "pacbio":
+        parser.add_argument("--avg_read_length",
+            type=int,
+            help="Average length of simulated reads (in bases). Default: 9000",
+            default = 9000, 
+            required=False)
+        parser.add_argument("--sd_read_length",
+            type=int,
+            help="Read length deviation of simulated reads (in bases). Default: 7000",
+            default = 7000, 
+            required=False)
+        parser.add_argument("--metag_size",
+            type=int,
+            help="Number of reads per metagenome. Default: 100,000",
+            default = 100000, 
+            required=False)
 
+    args, _ = parser.parse_known_args()
+    return(args)
+
+
+def main():
+    accepted_actions = ["illumina", "pacbio"]
+
+    if len(sys.argv) < 2 or sys.argv[1] in ["help", "--help", "-help", "-h"]:
+        print("Please, specify one action of: 'illumina' or 'pacbio'")
+        sys.exit()
+
+    action = sys.argv[1]
+    if action not in accepted_actions:
+        print(f"{action} is not a recognised action. Please specify one action of: 'illumina' or 'pacbio'")
+
+    args = options(action)
 
     # 1. Define parameters
     # Default
@@ -261,10 +343,16 @@ def main():
     min_val = args.min_value  # Minimum value
     max_val = args.max_value   # Maximum value
     reps = args.num_metagenomes # Total number of metagenomes
-    read_length = args.read_length # Read length
-    metag_size = args.metag_size # Metagenome size (total number of reads)
     threads = args.t # Number of threads to use
     out = args.out # Prefix for output files
+    if action == "illumina":
+        read_length = args.read_length
+        read_length_sd = 30
+        metag_size = args.metag_size
+    elif action == "pacbio":
+        read_length = args.avg_read_length
+        read_length_sd = args.sd_read_length
+        metag_size = args.metag_size
 
 
     # 2. Open log file
@@ -276,6 +364,7 @@ def main():
     tmp_dir = f"tmp_{out}"
     if os.path.isdir(tmp_dir) == True:
         logger.info(f"Temporary directory {tmp_dir} already exists. Remove the folder or choose a different --out prefix")
+        sys.exit()
     else:
         os.mkdir(tmp_dir)
 
@@ -289,7 +378,7 @@ def main():
         normalized_reads = get_points(min_val = min_val, max_val = max_val, num_points = num_species, target_sum = target_sum, mu = mu, metag_size = metag_size, plot = "True", out = out_plot, logger = logger)
 
         # 4.2. Simulate reads for each species
-        sr_list, genome_list = simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, ext, out, threads, logger)
+        sr_list, genome_list = simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, read_length_sd, ext, out, threads, logger, action)
 
         # 4.3. Save list of selected genomes to file
         out_selected_genomes = f"{out}_{rep}_selected_genomes.txt"
@@ -300,7 +389,7 @@ def main():
         logger.info(f"Selected genomes saved to: {out_selected_genomes}")
 
         # 4.4. Combine simulated reads into one file
-        merge_fastq_files(sr_list, sim_metag_file, logger)
+        merge_fastq_files(sr_list, sim_metag_file)
         logger.info(f"Simulated metagenome saved to: {sim_metag_file}\n")
 
         # 4.5. Clear tmp directory
