@@ -174,14 +174,17 @@ The script only requires the following inputs to run:
 1. File containing the path to the folder containing the genomes of each species (one per line). Genomes will be processed in the same order they are in the file. 
 2. Output prefix.
 
-Then, you can run the script using default parameters:
+Then, you can run the script using default parameters to simulate Illumina or PacBio metagenomes:
 ```
-python MetaG_simulator.py --genome genome_paths.txt --out test
+python MetaG_simulator.py illumina --genome genome_paths.txt --out test
+```
+```
+python MetaG_simulator.py pacbio --genome genome_paths.txt --out test
 ```
 
 By default, the metagenome will have an uneven genome distribution with a few abundant species and many low abundant species. However, you can modify this by tunning --max_value , --min_value and --mu. The ratio max_value / min_value determines the difference between the highest and the lowest abundant species. For example, if max_value = 100 and min_value = 1, the most abundant species will be 100 times more abundant than the less abundant one. By default, the ratio is 10,000. The --mu parameter controls for the mean of the underlying normal distribution (for further details, see the "mean" argument of the numpy.random.lognormal function [https://numpy.org/doc/2.1/reference/random/generated/numpy.random.lognormal.html]). The default mu value is 2 which provides an uneven metagenome but could be increased to 5, for example, to make the distribution more even.
 ```
-python MetaG_simulator.py --genome genome_paths.txt --out test --max_value 500 --min_value 1 --mu 5
+python MetaG_simulator.py illumina --genome genome_paths.txt --out test --max_value 500 --min_value 1 --mu 5
 ```
 
 The output will include:
