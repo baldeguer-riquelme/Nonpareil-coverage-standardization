@@ -149,13 +149,25 @@ def fasta_filter(input, tmp_input, min_length):
     return(genome_length)
 
 
-def simulate_illumina(genome, tmp_genome, read_length, num_sim_reads, threads, out_file, prefix, log_file, logger):
+def simulate_illumina(genome, tmp_genome, read_length, num_sim_reads, threads, list_error_prob, out_file, prefix, log_file, logger):
     genome_length = fasta_filter(genome, tmp_genome, 2 * read_length)
-    cmd = f"mason_simulator --ir {tmp_genome} \
-        --illumina-read-length {read_length} --seq-technology illumina \
-        -n {num_sim_reads} --num-threads {threads} \
-        -o {out_file} --fragment-size-model normal\
-        --read-name-prefix {prefix} >> {log_file} 2>&1"
+    if list_error_prob:
+        cmd = f"mason_simulator --ir {tmp_genome} \
+            --illumina-read-length {read_length} --seq-technology illumina \
+            -n {num_sim_reads} --num-threads {threads} \
+            -o {out_file} --fragment-size-model normal\
+            --read-name-prefix {prefix} \
+            --illumina-prob-insert {list_error_prob[0]}\
+            --illumina-prob-deletion {list_error_prob[1]}\
+            --illumina-prob-mismatch {list_error_prob[2]}\
+            --illumina-prob-mismatch-begin {list_error_prob[3]}\
+            --illumina-prob-mismatch-end {list_error_prob[4]} >> {log_file} 2>&1"
+    else:
+        cmd = f"mason_simulator --ir {tmp_genome} \
+            --illumina-read-length {read_length} --seq-technology illumina \
+            -n {num_sim_reads} --num-threads {threads} \
+            -o {out_file} --fragment-size-model normal\
+            --read-name-prefix {prefix} >> {log_file} 2>&1"
     res_sim = subprocess.run(cmd, shell = True)
     os.remove(tmp_genome)
     if res_sim.returncode != 0:
@@ -193,7 +205,7 @@ def simulate_pacbio(genome, tmp_genome, read_length, read_length_sd, num_sim_rea
         os.remove(file)
 
 
-def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, read_length_sd, ext, out, threads, logger, action):
+def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, read_length_sd, list_error_prob, ext, out, threads, logger, action):
     # Read input list of folders
     with open(input, "r") as f:
         folder_list = f.readlines()
@@ -224,7 +236,7 @@ def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log
             logger.info(f"Simulating reads for genome {genome}")
             if action == "illumina":
                 out_file = f"{out_path}_SE.fastq" # Name of the output file
-                simulate_illumina(genome, tmp_genome, read_length, num_sim_reads, threads, out_file, prefix, log_file, logger)
+                simulate_illumina(genome, tmp_genome, read_length, num_sim_reads, threads, list_error_prob, out_file, prefix, log_file, logger)
             elif action == "pacbio":
                 out_file = f"{out_path}_PB.fastq" # Name of the output file
                 simulate_pacbio(genome, tmp_genome, read_length, read_length_sd, num_sim_reads, threads, out_file, out_path, prefix, log_file, logger)
@@ -295,6 +307,11 @@ def options(action):
             help="Number of reads per metagenome. Default: 30,000,000",
             default = 30000000, 
             required=False)
+        parser.add_argument("--error_prob",
+            type=str,
+            help="List of float values specifying read error probabilities in the following order: Probability insert, Probability deletion, Probability mismatch, Probability mismatch begin and Probability mismatch end. For error free reads use '0.0,0.0,0.0,0.0,0.0'. Default: mason_simulator default parameters",
+            default = None, 
+            required=False)
     #
     if action == "pacbio":
         parser.add_argument("--avg_read_length",
@@ -349,10 +366,16 @@ def main():
         read_length = args.read_length
         read_length_sd = 30
         metag_size = args.metag_size
+        error_prob = args.error_prob
+        if error_prob:
+            list_error_prob = [float(param) for param in error_prob.split(",")]
+        else:
+            list_error_prob = None
     elif action == "pacbio":
         read_length = args.avg_read_length
         read_length_sd = args.sd_read_length
         metag_size = args.metag_size
+        list_error_prob = ""
 
 
     # 2. Open log file
@@ -378,7 +401,7 @@ def main():
         normalized_reads = get_points(min_val = min_val, max_val = max_val, num_points = num_species, target_sum = target_sum, mu = mu, metag_size = metag_size, plot = "True", out = out_plot, logger = logger)
 
         # 4.2. Simulate reads for each species
-        sr_list, genome_list = simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, read_length_sd, ext, out, threads, logger, action)
+        sr_list, genome_list = simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log_file, min_val, max_val, target_sum, read_length, read_length_sd, list_error_prob, ext, out, threads, logger, action)
 
         # 4.3. Save list of selected genomes to file
         out_selected_genomes = f"{out}_{rep}_selected_genomes.txt"
