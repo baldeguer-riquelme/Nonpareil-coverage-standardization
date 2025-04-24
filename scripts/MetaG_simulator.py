@@ -222,7 +222,8 @@ def simulate_reads(input, normalized_reads, num_species, num_genomes_per_sp, log
 
         avail_genomes = glob(f"{folder}/*{ext}")
         selected_genomes = random.sample(avail_genomes, num_genomes_per_sp)
-        genome_list.append(selected_genomes[0])
+        for g in selected_genomes:
+            genome_list.append(g)
 
         genome_reads = get_points(min_val = min_val, max_val = max_val, num_points = num_genomes_per_sp, target_sum = target_sum, mu = 2, metag_size = sp_reads, plot = "False", out = out, logger = logger)
 
